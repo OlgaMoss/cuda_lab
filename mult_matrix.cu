@@ -6,7 +6,7 @@
 
 __global__ void Muld(float*, float*, int, int, float*);
 
-void Mul(const float* A, const float* B, int hA, int wA, int wB, float* C)
+void Mul(const float* A, const float* B, int hA, int wA, int wB, float* C) {
     int size;
     
     float* Ad;
