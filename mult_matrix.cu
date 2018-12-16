@@ -104,12 +104,12 @@ int main(int argc, char* argv[]){
     C.elements = (float*)malloc(C.width * C.height * sizeof(float));
     for(int i = 0; i < A.height; i++) {
       for(int j = 0; j < A.width; j++) {
-        A.elements[i*A.width + j] = (arc4random() % 3);
+        A.elements[i*A.width + j] = (random() % 3);
       }
     }    
     for(int i = 0; i < B.height; i++) {
       for(int j = 0; j < B.width; j++) {
-        B.elements[i*B.width + j] = (arc4random() % 2);
+        B.elements[i*B.width + j] = (random() % 2);
       }
     }
 
