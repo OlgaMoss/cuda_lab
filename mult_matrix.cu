@@ -1,80 +1,139 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <assert.h>
+#include "multShare.h"
 
-#define BLOCK_SIZE 16
+void MatMul(const Matrix A, const Matrix B, Matrix C) {
 
-__global__ void Muld(float*, float*, int, int, float*);
+  Matrix d_A;
+  d_A.width = d_A.stride = A.width;
+  d_A.height = A.height;
+  size_t size = A.width * A.height * sizeof(float);
+  cudaError_t err = cudaMalloc(&d_A.elements, size);
+  printf("CUDA malloc A: %s\n",cudaGetErrorString(err));
+  cudaMemcpy(d_A.elements, A.elements, size, cudaMemcpyHostToDevice);
+  Matrix d_B;
+  d_B.width = d_B.stride = B.width;
+  d_B.height = B.height;
+  size = B.width * B.height * sizeof(float);
+  err = cudaMalloc(&d_B.elements, size);
+  printf("CUDA malloc B: %s\n",cudaGetErrorString(err));
+  cudaMemcpy(d_B.elements, B.elements, size, cudaMemcpyHostToDevice);
+  Matrix d_C;
+  d_C.width = d_C.stride = C.width;
+  d_C.height = C.height;
+  size = C.width * C.height * sizeof(float);
+  err = cudaMalloc(&d_C.elements, size);
+  printf("CUDA malloc C: %s\n",cudaGetErrorString(err));
+  dim3 dimBlock(BLOCK_SIZE, BLOCK_SIZE);
+  dim3 dimGrid(B.width / dimBlock.x, A.height / dimBlock.y);
+    MatMulKernel<<<dimGrid, dimBlock>>>(d_A, d_B, d_C);
+    err = cudaThreadSynchronize();
+    printf("Run kernel: %s\n", cudaGetErrorString(err));
+  err = cudaMemcpy(C.elements, d_C.elements, size, cudaMemcpyDeviceToHost);
+  printf("Copy C off of device: %s\n",cudaGetErrorString(err));
 
-void Mul(const float* A, const float* B, int hA, int wA, int wB, float* C) {
-    int size;
-    
-    float* Ad;
-    size = hA * wA * sizeof(float);
-    cudaMalloc((void**)&Ad, size);
-    cudaMemcpy(Ad, A, size, cudaMemcpyHostToDevice);
-    float* Bd;
-    size = wA * wB * sizeof(float);
-    cudaMalloc((void**)&Bd, size);
-    cudaMemcpy(Bd, B, size, cudaMemcpyHostToDevice);
-    
-    float* Cd;
-    size = hA * wB * sizeof(float);
-    cudaMalloc((void**)&Cd, size);
-    
-    dim3 dimBlock(BLOCK_SIZE, BLOCK_SIZE);
-    dim3 dimGrid(wB / dimBlock.x, hA / dimBlock.y);
-    
-    Muld<<<dimGrid, dimBlock>>>(Ad, Bd, wA, wB, Cd);
-    
-    cudaMemcpy(C, Cd, size, cudaMemcpyDeviceToHost);
-    
-    cudaFree(Ad);
-    cudaFree(Bd);
-    cudaFree(Cd);
+  cudaFree(d_A.elements);
+  cudaFree(d_B.elements);
+  cudaFree(d_C.elements);
 }
 
 
-__global__ void Muld(float* A, float* B, int wA, int wB, float* C)
-{
-    
-    int bx = blockIdx.x;
-    int by = blockIdx.y;
-   
-    int tx = threadIdx.x;
-    int ty = threadIdx.y;
-    
-    int aBegin = wA * BLOCK_SIZE * by;
+__device__ float GetElement(const Matrix A, int row, int col) {
+  return A.elements[row * A.stride + col];
+}
+
+__device__ void SetElement(Matrix A, int row, int col, float value) {
+  A.elements[row * A.stride + col] = value;
+}
+
+__device__ Matrix GetSubMatrix(Matrix A, int row, int col) {
+  Matrix Asub;
+  Asub.width = BLOCK_SIZE;
+  Asub.height = BLOCK_SIZE;
+  Asub.stride = A.stride;
+  Asub.elements = &A.elements[A.stride * BLOCK_SIZE * row + BLOCK_SIZE * col];
+  return Asub;
+}
+
+__global__ void MatMulKernel(Matrix A, Matrix B, Matrix C) {
+
+  int blockRow = blockIdx.y;
+  int blockCol = blockIdx.x;
+
+  Matrix Csub = GetSubMatrix(C, blockRow, blockCol);
+
+  float Cvalue = 0.0;
+  int row = threadIdx.y;
+  int col = threadIdx.x;
   
-    int aEnd   = aBegin + wA - 1;
+  for (int m = 0; m < (A.width / BLOCK_SIZE); ++m) {
    
-    int aStep  = BLOCK_SIZE;
+    Matrix Asub = GetSubMatrix(A, blockRow, m);
+    Matrix Bsub = GetSubMatrix(B, m, blockCol);
 
-    int bBegin = BLOCK_SIZE * bx;
- 
-    int bStep  = BLOCK_SIZE * wB;
+    __shared__ float As[BLOCK_SIZE][BLOCK_SIZE];
+    __shared__ float Bs[BLOCK_SIZE][BLOCK_SIZE];
 
-    float Csub = 0;
- 
-    for (int a = aBegin, b = bBegin;
-             a <= aEnd;
-             a += aStep, b += bStep) {
-      
-        __shared__ float As[BLOCK_SIZE][BLOCK_SIZE];
+    As[row][col] = GetElement(Asub, row, col);
+    Bs[row][col] = GetElement(Bsub, row, col);
 
-        __shared__ float Bs[BLOCK_SIZE][BLOCK_SIZE];
-     
-        As[ty][tx] = A[a + wA * ty + tx];
-        Bs[ty][tx] = B[b + wB * ty + tx];
-     
-        __syncthreads();
+    __syncthreads();
 
-        for (int k = 0; k < BLOCK_SIZE; ++k)
-           Csub += As[ty][k] * Bs[k][tx];
-  
-        __syncthreads();
+    for (int e = 0; e < BLOCK_SIZE; ++e)
+      Cvalue += As[row][e] * Bs[e][col];
+
+    __syncthreads();
+  }
+  SetElement(Csub, row, col, Cvalue);
+}
+
+
+int main(int argc, char* argv[]){
+    Matrix A, B, C;
+    int a1, a2, b1, b2;
+    a1 = atoi(argv[1]); 
+    a2 = atoi(argv[2]); 
+    b1 = a2;     
+    b2 = atoi(argv[3]); 
+    A.height = a1;
+    A.width = a2;
+    A.elements = (float*)malloc(A.width * A.height * sizeof(float));
+    B.height = b1;
+    B.width = b2;
+    B.elements = (float*)malloc(B.width * B.height * sizeof(float));
+    C.height = A.height;
+    C.width = B.width;
+    C.elements = (float*)malloc(C.width * C.height * sizeof(float));
+    for(int i = 0; i < A.height; i++) {
+      for(int j = 0; j < A.width; j++) {
+        A.elements[i*A.width + j] = (arc4random() % 3);
+      }
+    }    
+    for(int i = 0; i < B.height; i++) {
+      for(int j = 0; j < B.width; j++) {
+        B.elements[i*B.width + j] = (arc4random() % 2);
+      }
     }
 
-    int c = wB * BLOCK_SIZE * by + BLOCK_SIZE * bx;
-    C[c + wB * ty + tx] = Csub;
-}
+    MatMul(A, B, C);
+
+    for(int i = 0; i < min(10, A.height); i++) {
+      for(int j = 0; j < min(10, A.width); j++) {
+        printf("%f ", A.elements[i*A.width + j]);
+      }
+      printf("\n");
+    }
+    printf("\n");
+    for(int i = 0; i < min(10, B.height); i++){
+      for(int j = 0; j < min(10, B.width); j++){
+        printf("%f ", B.elements[i*B.width + j]);
+      }
+      printf("\n");
+    }
+    printf("\n");  
+    for(int i = 0; i < min(10, C.height); i++){
+      for(int j = 0; j < min(10, C.width); j++){
+        printf("%f ", C.elements[i*C.width + j]);
+      }
+      printf("\n");
+    }
+    printf("\n");
+}    
